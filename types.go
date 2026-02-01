@@ -106,12 +106,20 @@ type registerTransactionRequestBody struct {
 }
 
 type registerTransactionResponseBody struct {
-	ErrorData    string                  `json:"error,omitempty"`
-	Code         int                     `json:"code,omitempty"`
-	ResponseCode int                     `json:"responseCode,omitempty"`
-	Data         registerTransactionData `json:"Data,omitempty"`
+	ErrorData    string                       `json:"error,omitempty"`
+	Code         int                          `json:"code,omitempty"`
+	ResponseCode int                          `json:"responseCode,omitempty"`
+	Data         registerTransactionDataField `json:"Data,omitempty"`
 }
-
-type registerTransactionData struct {
+type verifyTransactionResponseBody struct {
+	ErrorData    string                     `json:"error,omitempty"`
+	Code         int                        `json:"code,omitempty"`
+	ResponseCode int                        `json:"responseCode,omitempty"`
+	Data         verifyTransactionDataField `json:"Data,omitempty"`
+}
+type registerTransactionDataField struct {
 	Token string `json:"token"`
+}
+type verifyTransactionDataField struct {
+	Status string `json:"status"`
 }
