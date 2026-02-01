@@ -21,6 +21,7 @@ type APIClientOptions struct {
 	RedirectPath                string
 	ClientTimeout               time.Duration
 	Logger                      *slog.Logger
+	url                         string
 }
 
 type APIClientOption func(*APIClientOptions)
@@ -61,6 +62,12 @@ func WithLogger(logger *slog.Logger) APIClientOption {
 	}
 }
 
+func withURL(url string) APIClientOption {
+	return func(ao *APIClientOptions) {
+		ao.url = url
+	}
+}
+
 type APIClient struct {
 	client *http.Client
 	logger *slog.Logger
@@ -93,6 +100,7 @@ func NewClient(posID, merchantID int, crcKey, reportKey string, setters ...APICl
 		ClientTimeout:               30 * time.Second,
 		RedirectPath:                "/",
 		Logger:                      slog.New(slog.NewTextHandler(io.Discard, nil)),
+		url:                         "https://sandbox.przelewy24.pl",
 	}
 
 	for _, setter := range setters {
@@ -108,7 +116,7 @@ func NewClient(posID, merchantID int, crcKey, reportKey string, setters ...APICl
 		posID:                           posID,
 		crcKey:                          crcKey,
 		reportKey:                       reportKey,
-		url:                             "https://sandbox.przelewy24.pl",
+		url:                             args.url,
 		transactionRegisterEndpoint:     "/api/v1/transaction/register",
 		transactionRedirectionEndpoint:  "/trnRequest",
 		transactionVerificationEndpoint: "/api/v1/transaction/verify",
@@ -349,7 +357,8 @@ func (c *APIClient) NotificationWebhookHandler(handler NotificationHandler) func
 
 		err = c.verifyTransaction(r.Context(), data)
 		if err != nil {
-			c.logger.Error("Transaction could not Verified.", "error", err)
+			fmt.Println(err)
+			c.logger.Error("Transaction could not be Verified.", "error", err)
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
@@ -391,7 +400,7 @@ func (c *APIClient) verifyTransaction(ctx context.Context, rb VerificationData) 
 	if err != nil {
 		return fmt.Errorf("error while reading body of verification response: %w", err)
 	}
-	r := &registerTransactionResponseBody{}
+	r := &verifyTransactionResponseBody{}
 	err = json.Unmarshal(responseBody, r)
 	if err != nil {
 		return fmt.Errorf("transaction verification response unmarshalling error: %w", err)
