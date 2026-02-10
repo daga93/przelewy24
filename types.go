@@ -15,6 +15,21 @@ type NotificationBody struct {
 	Sign         string   `json:"sign"`
 }
 
+// RefundNotificationBody is the body of webhook notification that you get
+// after success refund.
+type RefundNotificationBody struct {
+	OrderId     int      `json:"orderId"`
+	SessionId   string   `json:"sessionId"`
+	MerchantId  int      `json:"merchantId"`
+	RequestId   string   `json:"requestId"`
+	RefundsUuid string   `json:"refundsUuid"`
+	Amount      int      `json:"amount"`
+	Currency    Currency `json:"currency"`
+	Timestamp   int      `json:"timestamp"`
+	Status      int      `json:"status"`
+	Sign        string   `json:"sign"`
+}
+
 type Currency string
 
 type Country string
@@ -122,4 +137,58 @@ type registerTransactionDataField struct {
 }
 type verifyTransactionDataField struct {
 	Status string `json:"status"`
+}
+
+type refund struct {
+	OrderId     int    `json:"orderId"`
+	SessionId   string `json:"sessionId"`
+	Amount      int    `json:"amount"`
+	Description string `json:"description"`
+}
+
+type refundRequestBody struct {
+	RequestId   string   `json:"requestId"`
+	Refunds     []refund `json:"refunds"`
+	RefundsUuid string   `json:"refundsUuid"`
+	UrlStatus   string   `json:"urlStatus"`
+}
+
+type GetTransactionDetailsResponseBody struct {
+	Data         TransactionDetails `json:"data"`
+	ResponseCode int                `json:"responseCode"`
+}
+
+type TransactionDetails struct {
+	Statement         string   `json:"statement"`
+	OrderId           int      `json:"orderId"`
+	SessionId         string   `json:"sessionId"`
+	Status            int      `json:"status"`
+	Amount            int      `json:"amount"`
+	Currency          Currency `json:"currency"`
+	Date              string   `json:"date"`
+	DateOfTransaction string   `json:"dateOfTransaction"`
+	ClientEmail       string   `json:"clientEmail"`
+	AccountMD5        string   `json:"accountMD5"`
+	PaymentMethod     int      `json:"paymentMethod"`
+	Description       string   `json:"description"`
+	ClientName        string   `json:"clientName"`
+	ClientAddress     string   `json:"clientAddress"`
+	ClientCity        string   `json:"clientCity"`
+	ClientPostcode    string   `json:"clientPostcode"`
+	BatchId           int      `json:"batchId"`
+	Fee               string   `json:"fee"`
+}
+
+type RefundResponseBody struct {
+	Data         []RefundResponseData `json:"data"`
+	ResponseCode int                  `json:"responseCode"`
+}
+
+type RefundResponseData struct {
+	OrderId     int    `json:"orderId"`
+	SessionId   string `json:"sessionId"`
+	Amount      int    `json:"amount"`
+	Description string `json:"description"`
+	Status      bool   `json:"status"`
+	Message     string `json:"message"`
 }

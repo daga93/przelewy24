@@ -10,14 +10,18 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 type APIClientOptions struct {
 	TestEnvironment             bool
 	ShopDomain                  string
 	TransactionNotificationPath string
+	RefundNotificationPath      string
 	RedirectPath                string
 	ClientTimeout               time.Duration
 	Logger                      *slog.Logger
@@ -44,6 +48,11 @@ func WithTransactionNotificationPath(p string) APIClientOption {
 	}
 }
 
+func WithRefundNotificationPath(p string) APIClientOption {
+	return func(ao *APIClientOptions) {
+		ao.RefundNotificationPath = p
+	}
+}
 func WithRedirectPath(p string) APIClientOption {
 	return func(ao *APIClientOptions) {
 		ao.RedirectPath = p
@@ -82,21 +91,27 @@ type APIClient struct {
 	transactionRegisterEndpoint     string
 	transactionRedirectionEndpoint  string
 	transactionVerificationEndpoint string
+	transactionDetailsEndpoint      string
+	refundEndpoint                  string
 
-	urlStatus string
-	urlReturn string
+	urlStatus       string
+	urlReturn       string
+	urlRefundStatus string
 }
 
 type NotificationHandler func(notification *NotificationBody) (VerificationData, error)
+type RefundNotificationHandler func(notification *RefundNotificationBody) (RefundVerificationData, error)
 
 // NewClient creates new Przelewy24 API Client.
 // This is main client that is used to perform
 // actions on Przelewy24 API.
+// API Client does not produce any logs, unless you pass a logger (.WithLogger()).
 func NewClient(posID, merchantID int, crcKey, reportKey string, setters ...APIClientOption) *APIClient {
 	args := &APIClientOptions{
 		TestEnvironment:             true,
 		ShopDomain:                  "http://localhost:8080",
 		TransactionNotificationPath: "/p24/payment/transaction/notification",
+		RefundNotificationPath:      "/p24/refund/notification",
 		ClientTimeout:               30 * time.Second,
 		RedirectPath:                "/",
 		Logger:                      slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -120,9 +135,12 @@ func NewClient(posID, merchantID int, crcKey, reportKey string, setters ...APICl
 		transactionRegisterEndpoint:     "/api/v1/transaction/register",
 		transactionRedirectionEndpoint:  "/trnRequest",
 		transactionVerificationEndpoint: "/api/v1/transaction/verify",
+		transactionDetailsEndpoint:      "/api/v1/transaction/by/sessionId/",
+		refundEndpoint:                  "/api/v1/transaction/refund",
 		domain:                          args.ShopDomain,
 		urlStatus:                       fmt.Sprintf("%s%s", args.ShopDomain, args.TransactionNotificationPath),
 		urlReturn:                       fmt.Sprintf("%s%s", args.ShopDomain, args.RedirectPath),
+		urlRefundStatus:                 fmt.Sprintf("%s%s", args.ShopDomain, args.RefundNotificationPath),
 	}
 
 	if args.TestEnvironment == false {
@@ -276,7 +294,10 @@ func (c *APIClient) RegisterTransaction(
 		opt(&body)
 	}
 
-	signature := signRegistration(body.SessionId, c.merchantID, amount, currency, c.crcKey)
+	signature, err := getRegisterSign(body.SessionId, c.merchantID, amount, currency, c.crcKey)
+	if err != nil {
+		c.logger.Error("Sign could not be generated.", "error", err)
+	}
 	body.Sign = hex.EncodeToString(signature[:])
 
 	b, err := json.Marshal(body)
@@ -357,7 +378,6 @@ func (c *APIClient) NotificationWebhookHandler(handler NotificationHandler) func
 
 		err = c.verifyTransaction(r.Context(), data)
 		if err != nil {
-			fmt.Println(err)
 			c.logger.Error("Transaction could not be Verified.", "error", err)
 			w.WriteHeader(http.StatusInternalServerError)
 			return
@@ -367,9 +387,151 @@ func (c *APIClient) NotificationWebhookHandler(handler NotificationHandler) func
 	}
 }
 
+// RefundWebhookHandler returns a handler that handles Webhook Notification about Refund.
+// The handler that is passed to this function should return data ([VerificationData]) from your database.
+// This data is used to verify, that transaction was correct.
+func (c *APIClient) RefundWebhookHandler(handler RefundNotificationHandler) func(w http.ResponseWriter, r *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Body != nil {
+			defer r.Body.Close()
+		}
+
+		ipStr := getIP(r)
+		if !isIPInList(ipStr, trustedIPs) {
+			c.logger.Warn("Notification from untrusted IP. Aborting.", "ip", ipStr)
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+
+		var notification RefundNotificationBody
+		if err := json.NewDecoder(r.Body).Decode(&notification); err != nil {
+			c.logger.Error("Failed to decode p24 refund webhook notification.", "error", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+
+		data, err := handler(&notification)
+		if err != nil {
+			c.logger.Error("Refund could not be verified - error on execution of Refund Notification Handler", "error", err)
+			w.WriteHeader(http.StatusPreconditionFailed)
+			return
+		}
+
+		sign, err := getRefundSign(
+			data.OrderId,
+			data.SessionId,
+			data.RefundsUUID,
+			c.merchantID,
+			data.Amount,
+			data.Currency,
+			notification.Status,
+			c.crcKey,
+		)
+		if err != nil {
+			c.logger.Error("Sign could not be generated.", "error", err)
+			w.WriteHeader(http.StatusBadRequest)
+		}
+
+		if hex.EncodeToString(sign[:]) != notification.Sign {
+			c.logger.Error("Refund could not be verified - invalid signature!", "orderID", notification.OrderId, "sessionID", notification.SessionId)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+
+		c.logger.Info("Refund verification success.", "orderID", notification.OrderId, "sessionID", notification.SessionId)
+		w.WriteHeader(http.StatusOK)
+	}
+}
+
+func (c *APIClient) Refund(ctx context.Context, orderId int, sessionID, refundUUID string, amount int, description string) ([]RefundResponseData, error) {
+	reqBody := refundRequestBody{
+		RequestId: uuid.New().String(),
+		Refunds: []refund{
+			{OrderId: orderId, SessionId: sessionID, Amount: amount, Description: description},
+		},
+		RefundsUuid: refundUUID,
+		UrlStatus:   c.urlRefundStatus,
+	}
+
+	b, err := json.Marshal(reqBody)
+	if err != nil {
+		return []RefundResponseData{}, fmt.Errorf("refund body marshalling error: %w", err)
+	}
+	addr := c.url + c.refundEndpoint
+	req, err := http.NewRequestWithContext(ctx, "POST", addr, bytes.NewReader(b))
+	c.setHeaders(req)
+	resp, err := c.client.Do(req)
+	if err != nil {
+		c.logger.Error("Failed to make refund in Przelewy24.", "error", err, "status", resp.StatusCode)
+		return []RefundResponseData{}, fmt.Errorf("p24: error when making refund: %w", err)
+	}
+	defer resp.Body.Close()
+
+	responseBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		c.logger.Error("Error reading refund response body.", "error", err, "status", resp.StatusCode)
+		return []RefundResponseData{}, fmt.Errorf("p24: error when reading refund response body: %w", err)
+	}
+	r := &RefundResponseBody{}
+	err = json.Unmarshal(responseBody, r)
+	if err != nil {
+		c.logger.Error("Unmarshalling Refund body failed.", "error", err)
+		return []RefundResponseData{}, fmt.Errorf("p24: failed to unmarshal refund response: %w", err)
+	}
+
+	if resp.StatusCode != 201 {
+		c.logger.Error("Unexpected status of response.", "code", resp.StatusCode)
+		return []RefundResponseData{}, fmt.Errorf("p24: unexpected status code (%s) when making refund.", resp.Status)
+	}
+	c.logger.Info("Refund done.", "session_id", sessionID)
+
+	return r.Data, nil
+}
+
+func (c *APIClient) GetTransactionDetails(ctx context.Context, sessionID string) (TransactionDetails, error) {
+	addr := c.url + c.transactionDetailsEndpoint + url.QueryEscape(sessionID)
+	req, err := http.NewRequestWithContext(ctx, "", addr, strings.NewReader(""))
+	if err != nil {
+		c.logger.Error("Creating new request failed.", "error", err)
+		return TransactionDetails{}, fmt.Errorf("p24: failed to create new request: %w", err)
+	}
+	c.setHeaders(req)
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		c.logger.Error("Failed to register transaction in Przelewy24.", "error", err, "status", resp.StatusCode)
+		return TransactionDetails{}, fmt.Errorf("p24: error when getting transaction details: %w", err)
+	}
+	defer resp.Body.Close()
+
+	responseBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		c.logger.Error("Failed to get transaction details.", "error", err, "status", resp.StatusCode)
+		return TransactionDetails{}, fmt.Errorf("p24: error when getting transaction details: %w", err)
+	}
+
+	r := &GetTransactionDetailsResponseBody{}
+	err = json.Unmarshal(responseBody, r)
+	if err != nil {
+		c.logger.Error("Unmarshalling Register Transaction body failed.", "error", err)
+		return TransactionDetails{}, fmt.Errorf("p24: failed to unmarshal transaction detail response: %w", err)
+	}
+
+	if resp.StatusCode != 200 {
+		c.logger.Error("Unexpected error when getting transaction details.", "code", resp.StatusCode)
+		return TransactionDetails{}, fmt.Errorf("p24: unexpected status code (%s) when getting transaction details;'", resp.Status)
+	}
+	c.logger.Info("Transaction details succesfully fetched.", "session_id", sessionID)
+
+	return r.Data, nil
+}
+
 // verifyTransaction sends request to Przelewy24, with acknowledgement that the transaction is correct.
 func (c *APIClient) verifyTransaction(ctx context.Context, rb VerificationData) error {
-	signature := signVerification(rb.SessionId, rb.OrderId, rb.Amount, rb.Currency, c.crcKey)
+	signature, err := getVerificationSign(rb.SessionId, rb.OrderId, rb.Amount, rb.Currency, c.crcKey)
+	if err != nil {
+		c.logger.Error("Sign could not be generated.", "error", err)
+	}
 	requestBody := verifyTransactionRequestBody{
 		MerchantId: c.merchantID,
 		PosId:      c.posID,

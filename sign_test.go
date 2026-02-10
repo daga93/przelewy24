@@ -23,7 +23,7 @@ func TestSignRegistration(t *testing.T) {
 	copy(ex[:], expectedBytes)
 
 	// Act
-	got := signRegistration(sessionID, merchantID, amount, currency, crc)
+	got, _ := getRegisterSign(sessionID, merchantID, amount, currency, crc)
 
 	// Assert
 	if ex != got {
@@ -49,7 +49,7 @@ func TestSignVerify(t *testing.T) {
 	copy(ex[:], expectedBytes)
 
 	// Act
-	got := signVerification(sessionID, orderID, amount, currency, crc)
+	got, _ := getVerificationSign(sessionID, orderID, amount, currency, crc)
 
 	// Assert
 	if ex != got {

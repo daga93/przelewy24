@@ -47,6 +47,5 @@ This is non comercial package build in spare time. I do not guarantee that it wi
 Currently only Payments are available. I plan to add refunds API in near future.
 
 ## TODOs
-- Cover with tests
+- Cover with tests and do refactor
 - Add some build
-- Implement Refunds
